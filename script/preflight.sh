@@ -106,7 +106,7 @@ PY
 
 printf '\n'
 case $ok in
-  0) printf '\033[32mREADY\033[0m  nothing was broadcast. step 7 can deploy.\n\n' ;;
+  0) printf '\033[32mREADY\033[0m  nothing was broadcast. safe to deploy.\n\n' ;;
   1) printf '\033[33mREADY WITH WARNINGS\033[0m  review above before deploying.\n\n' ;;
   *) printf '\033[31mNOT READY\033[0m  fix the failures above first.\n\n'; exit 1 ;;
 esac

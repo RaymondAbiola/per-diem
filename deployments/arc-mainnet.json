@@ -1,0 +1,30 @@
+{
+  "network": "arc-mainnet",
+  "chainId": 5042,
+  "deployedAt": "2026-10-04T15:09:50Z",
+  "owner": "0xA75356bF1eD0eB422410d544cCE45DF0109f64ec",
+  "agent": "0x01dd47d2c01B053b4ce00ce35567D8e20A92EF6E",
+  "contracts": {
+    "PerDiem": {
+      "address": "0x3795C17A048F8A6e3f4C52007104C744AB1d7B07",
+      "tx": "0xcddc4d23241cf66db9e8b9ccd27554a7855a8bda2f75ce113bd5c3eaa2463d3c",
+      "gasUsed": 1003082,
+      "args": {
+        "agent": "0x01dd47d2c01B053b4ce00ce35567D8e20A92EF6E",
+        "budgetPerWindow": "1000000000000000000",
+        "windowLength": 86400,
+        "tailGas": 14187,
+        "maxGasPrice": "200000000000"
+      }
+    },
+    "PaidService": {
+      "address": "0x21436b32Cd55d544130e7548c9A7591195F4d33C",
+      "tx": "0x0824630912933dc2d38c5c0a65b6a1944eda3cfb5431ba97cde578e29f9a14be",
+      "gasUsed": 302938,
+      "args": {
+        "pricePerCall": "2000000000000000",
+        "beneficiary": "0xA75356bF1eD0eB422410d544cCE45DF0109f64ec"
+      }
+    }
+  }
+}
