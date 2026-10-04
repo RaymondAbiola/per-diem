@@ -259,4 +259,25 @@ contract PerDiemAdminTest is Test {
         vm.expectRevert();
         cap.execute(address(work), 0, abi.encodeCall(Work.burn, (1)));
     }
+
+    /// The two numbers in CapExceeded must be on the same basis: what this call needs,
+    /// and what is left for it. Reporting a cumulative figure next to a headroom figure
+    /// is how a caller ends up computing nonsense from the error.
+    function test_capExceededReportsNeededAndAvailable() public {
+        vm.prank(owner);
+        cap.setBudget(1e18, 86_400);
+
+        // Burn most of the window first so the headroom is small and known.
+        vm.prank(agent);
+        cap.execute(address(work), 0.9e18, "");
+        uint256 already = cap.spentInWindow(cap.currentWindow());
+        uint256 headroom = 1e18 - already;
+
+        // Now ask for more value than the headroom allows. The value leg guard fires
+        // before any gas is metered, so needed is exactly the value requested.
+        uint256 ask = headroom + 1;
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(PerDiem.CapExceeded.selector, ask, headroom));
+        cap.execute(address(work), ask, "");
+    }
 }

@@ -69,7 +69,9 @@ contract PerDiem {
     error NotOwner();
     error NotAgent();
     error Reentrant();
-    error CapExceeded(uint256 attempted, uint256 remaining);
+    /// @param needed what this one call costs, value plus metered execution
+    /// @param available what is left in the window before it
+    error CapExceeded(uint256 needed, uint256 available);
     error CallFailed(bytes ret);
     error ReimbursementFailed();
     error ZeroWindow();
@@ -120,7 +122,7 @@ contract PerDiem {
 
         // Cheap guard on the value leg before anything moves.
         if (already + value > budgetPerWindow) {
-            revert CapExceeded(already + value, budgetPerWindow - already);
+            revert CapExceeded(value, budgetPerWindow - already);
         }
 
         bool ok;
@@ -130,7 +132,7 @@ contract PerDiem {
         uint256 gasCost = _gasCost(gasAtEntry);
         uint256 total = value + gasCost;
         if (already + total > budgetPerWindow) {
-            revert CapExceeded(already + total, budgetPerWindow - already);
+            revert CapExceeded(total, budgetPerWindow - already);
         }
 
         uint256 spent = already + total;
