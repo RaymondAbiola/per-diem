@@ -175,10 +175,16 @@ td.gas { color: var(--gas); }
 .addr a { word-break: break-all; }
 .note { margin-top: 20px; color: var(--ink-2); font-size: 15px; max-width: 70ch; }
 .err { color: var(--refuse); font-family: var(--mono); font-size: 14px; margin-top: 10px; }
+.diag { border: 1px solid var(--refuse); border-left: 3px solid var(--refuse); background: var(--stamp-bg);
+  border-radius: 3px; padding: 14px 16px; margin-bottom: 22px; font-family: var(--mono); font-size: 14px; }
+.diag b { display: block; color: var(--refuse); font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px; }
+.diag span { color: var(--ink-2); word-break: break-word; }
 .sk { color: var(--ink-3); }
 </style>
 
 <div class="wrap">
+
+  <div id="diag" class="diag" hidden><b id="diag-t">Loading</b><span id="diag-m"></span></div>
 
   <header class="masthead">
     <div class="row">
@@ -186,6 +192,7 @@ td.gas { color: var(--gas); }
       <div class="chips">
         <span class="chip">Arc mainnet · 5042</span>
         <span class="chip live"><i class="dot beat"></i><span id="blk">connecting</span></span>
+        <span class="chip" id="ep-chip">via <span id="ep">rpc.mainnet.arc.io</span></span>
       </div>
     </div>
     <p class="thesis">
@@ -305,7 +312,16 @@ td.gas { color: var(--gas); }
 </div>
 
 <script>
-const RPC = "https://rpc.mainnet.arc.io";
+// Four independent Arc endpoints. A privacy or ad-blocking extension will happily
+// block a crypto RPC domain, and that failure looks identical to the network being
+// down, so the page rotates rather than giving up on the first refusal.
+const ENDPOINTS = [
+  "https://rpc.mainnet.arc.io",
+  "https://rpc.blockdaemon.mainnet.arc.io",
+  "https://rpc.drpc.mainnet.arc.io",
+  "https://rpc.quicknode.mainnet.arc.io",
+];
+let epIndex = 0;
 const EXPLORER = "https://explorer.arc.io";
 const CAP = "0x3795C17A048F8A6e3f4C52007104C744AB1d7B07";
 const SVC = "0x21436b32Cd55d544130e7548c9A7591195F4d33C";
@@ -332,24 +348,36 @@ const usd = (v, dp = 6) => "$" + (Number(v) / 1e18).toFixed(dp);
 const short = (a) => a.slice(0, 10) + "…" + a.slice(-6);
 
 let rpcId = 0;
-async function rpc(method, params, tries = 4) {
-  for (let a = 0; a < tries; a++) {
+async function rpc(method, params) {
+  let networkFails = 0;
+  for (let attempt = 0; attempt < ENDPOINTS.length * 3; attempt++) {
+    const url = ENDPOINTS[epIndex];
     let j;
     try {
-      const r = await fetch(RPC, {
+      const r = await fetch(url, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
       });
       j = await r.json();
     } catch (e) {
-      if (a === tries - 1) throw e;
-      await sleep(400 * (a + 1)); continue;
+      // fetch rejecting outright is a blocked request, a dead host or no network
+      networkFails++;
+      epIndex = (epIndex + 1) % ENDPOINTS.length;
+      if (networkFails >= ENDPOINTS.length) {
+        const err = new Error("every Arc endpoint refused the request");
+        err.blocked = true; throw err;
+      }
+      continue;
     }
-    if (!j.error) return j.result;
-    if (/rate limit/i.test(j.error.message || "")) { await sleep(450 * (a + 1)); continue; }
+    if (!j.error) { showEndpoint(); return j.result; }
+    if (/rate limit/i.test(j.error.message || "")) { await sleep(420 * (attempt + 1)); continue; }
     const err = new Error(j.error.message); err.data = j.error.data; throw err;
   }
   throw new Error("the node is rate limiting this page, try again shortly");
+}
+function showEndpoint() {
+  const el = $("ep");
+  if (el) el.textContent = ENDPOINTS[epIndex].replace("https://", "");
 }
 const callRaw = (to, data, extra = {}) => rpc("eth_call", [{ to, data, ...extra }, "latest"]);
 const readUint = async (to, data) => BigInt(await callRaw(to, data));
@@ -373,14 +401,32 @@ function decodeSpent(log) {
 
 const state = { fee: 0n, gasPrice: 0n, head: 0, scannedTo: 0, logs: [], busy: false };
 
-function fail(msg) { const e = $("err"); e.textContent = msg; e.hidden = false; }
+function fail(msg, blocked) {
+  const e = $("err"); e.textContent = msg; e.hidden = false;
+  $("diag-t").textContent = blocked
+    ? "A browser extension is blocking this page"
+    : "Could not load live data";
+  $("diag-m").innerHTML = blocked
+    ? "All four Arc RPC endpoints were refused before leaving your browser, which ad blockers and " +
+      "privacy extensions commonly do to crypto endpoints. Pause the blocker for this page and reload. " +
+      "Everything below still links to Arc's explorer, where the same figures can be read directly."
+    : msg;
+  $("diag").hidden = false;
+}
+let stage = "starting";
+function at(s) { stage = s; }
+window.addEventListener("error", (e) => fail(`${stage}: ${e.message}`));
+window.addEventListener("unhandledrejection", (e) =>
+  fail(`${stage}: ${e.reason?.message || e.reason}`, !!e.reason?.blocked));
 
 async function loadChain() {
+  at("reading block height");
   const [head, gp] = await Promise.all([rpc("eth_blockNumber", []), rpc("eth_gasPrice", [])]);
   state.head = parseInt(head, 16);
   state.gasPrice = BigInt(gp);
   $("blk").textContent = "block " + state.head.toLocaleString();
 
+  at("reading contract state");
   const [rem, win, budget, served, fee, winLen] = await Promise.all([
     readUint(CAP, SEL.remaining), readUint(CAP, SEL.currentWindow),
     readUint(CAP, SEL.budget), readUint(SVC, SEL.callsServed),
@@ -450,6 +496,7 @@ function paint({ budget, spent }) {
 }
 
 async function scan() {
+  at("reading Spent events");
   if (state.busy) return;
   state.busy = true; $("b-more").disabled = true;
   let to = state.scannedTo ? state.scannedTo - 1 : state.head;
@@ -545,6 +592,7 @@ function links() {
 }
 
 (async function start() {
+  at("building links");
   links();
   $("b-ok").addEventListener("click", () => simulate(false));
   $("b-no").addEventListener("click", () => simulate(true));
@@ -555,9 +603,10 @@ function links() {
     paint(totals);
     await showReceiptProof();
   } catch (e) {
-    fail("Could not reach Arc: " + e.message);
-    $("blk").textContent = "offline";
-    document.querySelector(".dot").classList.remove("beat");
+    fail(e.blocked ? e.message : `${stage}: ${e.message}`, !!e.blocked);
+    $("blk").textContent = e.blocked ? "blocked" : "offline";
+    const d = document.querySelector(".dot");
+    if (d) { d.classList.remove("beat"); d.style.background = "var(--refuse)"; }
   }
 })();
 </script>
