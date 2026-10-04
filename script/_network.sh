@@ -11,11 +11,13 @@ case "$NETWORK" in
     RPC_URL=https://rpc.mainnet.arc.io
     CHAIN_ID_EXPECTED=5042
     EXPLORER=https://explorer.arc.io
+    VERIFIER_URL=https://explorer.arc.io/api/
     ;;
   testnet)
     RPC_URL=https://rpc.testnet.arc.io
     CHAIN_ID_EXPECTED=5042002
     EXPLORER=https://explorer.testnet.arc.io
+    VERIFIER_URL=https://explorer.testnet.arc.io/api/
     ;;
   *)
     printf '\033[31merror: unknown NETWORK "%s", use mainnet or testnet\033[0m\n' "$NETWORK" >&2

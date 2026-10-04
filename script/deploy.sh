@@ -71,13 +71,18 @@ deploy() {
 }
 
 say "PaidService"
-read -r SERVICE SERVICE_TX < <(deploy src/PaidService.sol:PaidService "$PRICE_PER_CALL" "$OWNER")
+# deploy() runs in a subshell here, so its die() cannot stop this script. Check.
+read -r SERVICE SERVICE_TX < <(deploy src/PaidService.sol:PaidService "$PRICE_PER_CALL" "$OWNER") || true
+[ -n "${SERVICE:-}" ] || die "PaidService deploy failed, no address returned"
+[ -n "${SERVICE_TX:-}" ] || die "PaidService deployed to $SERVICE but no tx hash was captured"
 echo "  address  $SERVICE"
 echo "  tx       $SERVICE_TX"
 
 say "PerDiem"
 read -r PERDIEM PERDIEM_TX < <(deploy src/PerDiem.sol:PerDiem \
-  "$AGENT" "$BUDGET" "$WINDOW" "$TAIL_GAS" "$MAX_GAS_PRICE")
+  "$AGENT" "$BUDGET" "$WINDOW" "$TAIL_GAS" "$MAX_GAS_PRICE") || true
+[ -n "${PERDIEM:-}" ] || die "PerDiem deploy failed, no address returned"
+[ -n "${PERDIEM_TX:-}" ] || die "PerDiem deployed to $PERDIEM but no tx hash was captured"
 echo "  address  $PERDIEM"
 echo "  tx       $PERDIEM_TX"
 
@@ -128,6 +133,9 @@ cat > "$OUT" <<JSON
   }
 }
 JSON
+
+say "next"
+echo "  verify the source with: NETWORK=$NETWORK ./script/verify-source.sh"
 
 say "wrote $OUT"
 echo "  explorer   $EXPLORER/address/$PERDIEM"
