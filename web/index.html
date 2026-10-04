@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A live view of an on-chain dollar spending cap on Arc, where you can make the contract refuse a call in front of you.">
+<style>
+  :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  body { margin: 0; font: 14px system-ui, -apple-system, sans-serif; background: #fafaf9; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>PerDiem</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+</head>
+<body>
+<style>
+/* Layout: a per-diem expense docket. Masthead, today's sheet, a counter where the
+   reader tests the cap themselves, then the ruled ledger underneath. */
+:root {
+  --bg:        #f4f6f9;
+  --surface:   #ffffff;
+  --surface-2: #eef1f6;
+  --ink:       #101620;
+  --ink-2:     #4d5869;
+  --ink-3:     #7d8799;
+  --line:      #dfe4ec;
+  --line-2:    #c9d1dd;
+  --payload:   #2a78d6;
+  --gas:       #1baf7a;
+  --refuse:    #c0392f;
+  --accept:    #1b7f4f;
+  --track:     #dde3ec;
+  --stamp-bg:  #eef4fc;
+  --shadow:    0 1px 2px rgba(16,22,32,.06), 0 8px 24px -16px rgba(16,22,32,.28);
+  --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#0c0f14; --surface:#141922; --surface-2:#1b212c; --ink:#eef2f8; --ink-2:#9aa6b8;
+    --ink-3:#6b7689; --line:#222a36; --line-2:#2e3744; --payload:#3987e5; --gas:#19a173;
+    --refuse:#e57373; --accept:#4caf7d; --track:#262f3c; --stamp-bg:#141c28;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#0c0f14; --surface:#141922; --surface-2:#1b212c; --ink:#eef2f8; --ink-2:#9aa6b8;
+  --ink-3:#6b7689; --line:#222a36; --line-2:#2e3744; --payload:#3987e5; --gas:#19a173;
+  --refuse:#e57373; --accept:#4caf7d; --track:#262f3c; --stamp-bg:#141c28;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--display); font-size: 15px; line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 72px; }
+h1,h2,h3 { margin: 0; text-wrap: balance; font-weight: 600; letter-spacing: -0.015em; }
+p { margin: 0; }
+a { color: var(--payload); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* masthead ---------------------------------------------------------------- */
+.masthead { border-bottom: 2px solid var(--ink); padding-bottom: 18px; margin-bottom: 30px; }
+.masthead .row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.wordmark { font-size: clamp(30px, 6vw, 42px); font-weight: 700; letter-spacing: -0.03em; }
+.chips { display: flex; gap: 7px; flex-wrap: wrap; margin-left: auto; }
+.chip {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+  border: 1px solid var(--line-2); border-radius: 100px; padding: 3px 10px; color: var(--ink-2);
+  white-space: nowrap;
+}
+.chip.live { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gas); flex: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .dot.beat { animation: beat 2.4s ease-in-out infinite; }
+}
+@keyframes beat { 0%,100%{opacity:1} 50%{opacity:.25} }
+.thesis { margin-top: 12px; max-width: 62ch; color: var(--ink-2); font-size: 16px; }
+.thesis strong { color: var(--ink); font-weight: 600; }
+
+/* sheet ------------------------------------------------------------------- */
+.sheet {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+  box-shadow: var(--shadow); padding: 24px; margin-bottom: 22px;
+}
+.sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.spent { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 18px; flex-wrap: wrap; }
+.spent .big { font-family: var(--mono); font-size: clamp(38px, 9vw, 58px); font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+.spent .of { color: var(--ink-3); font-family: var(--mono); font-size: 16px; }
+
+.meter { height: 34px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--track); display: flex; overflow: hidden; }
+.meter i { display: block; height: 100%; transition: width .5s ease; }
+.meter .s-pay { background: var(--payload); }
+.meter .s-gap { background: var(--surface); width: 2px; flex: none; }
+.meter .s-gas { background: var(--gas); }
+.meter-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; flex-wrap: wrap; }
+.key { display: flex; gap: 16px; flex-wrap: wrap; }
+.key span { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+/* leg tiles --------------------------------------------------------------- */
+.legs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px; min-width: 0; }
+.tile .v { font-family: var(--mono); font-size: 22px; font-weight: 600; margin-top: 3px; letter-spacing: -0.02em; }
+.tile .sub { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+/* counter (the simulator) -------------------------------------------------- */
+.counter { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow); padding: 24px; margin-bottom: 22px; }
+.counter h2 { font-size: 20px; }
+.counter .lede { color: var(--ink-2); margin-top: 7px; max-width: 60ch; font-size: 14.5px; }
+.acts { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+button {
+  font-family: var(--display); font-size: 14px; font-weight: 550;
+  padding: 10px 16px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink);
+  transition: border-color .15s, background .15s;
+}
+button:hover:not(:disabled) { border-color: var(--ink-3); }
+button:focus-visible { outline: 2px solid var(--payload); outline-offset: 2px; }
+button:disabled { opacity: .5; cursor: progress; }
+button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+.stamp { margin-top: 18px; border: 1px solid var(--line); border-left: 3px solid var(--line-2); background: var(--stamp-bg); border-radius: 3px; padding: 16px; }
+.stamp[data-v="accept"] { border-left-color: var(--accept); }
+.stamp[data-v="refuse"] { border-left-color: var(--refuse); }
+.stamp .verdict { font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+.stamp[data-v="accept"] .verdict { color: var(--accept); }
+.stamp[data-v="refuse"] .verdict { color: var(--refuse); }
+.stamp[data-v="idle"] .verdict { color: var(--ink-3); }
+.stamp .lines { margin-top: 10px; display: grid; gap: 4px; }
+.stamp .ln { display: flex; justify-content: space-between; gap: 14px; font-family: var(--mono); font-size: 13px; }
+.stamp .ln b { font-weight: 500; color: var(--ink-2); }
+.raw { margin-top: 12px; }
+.raw summary { cursor: pointer; font-size: 12px; color: var(--ink-3); font-family: var(--mono); }
+.raw pre { margin: 8px 0 0; padding: 10px; background: var(--surface-2); border-radius: 3px; overflow-x: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); line-height: 1.5; }
+
+/* ledger ------------------------------------------------------------------ */
+.ledger { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 22px; }
+.ledger-head { padding: 20px 24px 14px; display: flex; justify-content: space-between; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+th { text-align: right; font-weight: 500; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 8px 14px; border-block: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; padding-left: 24px; }
+th:last-child, td:last-child { padding-right: 24px; }
+td { text-align: right; padding: 9px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: 0; }
+td.pay { color: var(--payload); }
+td.gas { color: var(--gas); }
+.ledger-foot { padding: 14px 24px 20px; display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; align-items: center; }
+
+/* receipt proof ------------------------------------------------------------ */
+.proof { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 20px 24px; margin-bottom: 22px; }
+.proof .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 14px; margin-top: 14px; }
+.proof .cell .k { font-size: 11px; color: var(--ink-3); font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.proof .cell .n { font-family: var(--mono); font-size: 19px; font-weight: 600; margin-top: 2px; }
+
+/* footer ------------------------------------------------------------------- */
+.verify { border-top: 1px solid var(--line); padding-top: 22px; }
+.addrs { display: grid; gap: 8px; margin-top: 14px; }
+.addr { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; }
+.addr .k { color: var(--ink-3); min-width: 108px; }
+.addr a { word-break: break-all; }
+.note { margin-top: 18px; color: var(--ink-3); font-size: 12.5px; max-width: 70ch; }
+.err { color: var(--refuse); font-family: var(--mono); font-size: 12.5px; margin-top: 10px; }
+.sk { color: var(--ink-3); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="row">
+      <span class="wordmark">PerDiem</span>
+      <div class="chips">
+        <span class="chip">Arc mainnet · 5042</span>
+        <span class="chip live"><i class="dot beat"></i><span id="blk">connecting</span></span>
+      </div>
+    </div>
+    <p class="thesis">
+      A spending cap for autonomous agents that counts <strong>what a call moves</strong> and
+      <strong>what it costs to make</strong> against one USDC budget. Possible only because Arc
+      prices gas in USDC, so the contract reads its own execution cost in dollars with no oracle.
+    </p>
+  </header>
+
+  <section class="sheet">
+    <div class="sheet-head">
+      <div>
+        <div class="eyebrow">Spent this window</div>
+        <div class="spent">
+          <span class="big num" id="spent">$·.······</span>
+          <span class="of num" id="cap">of $·.··</span>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div class="eyebrow">Window</div>
+        <div class="num" id="win" style="font-size:15px">···</div>
+        <div class="num" id="resets" style="font-size:12px;color:var(--ink-3)">resets in ···</div>
+      </div>
+    </div>
+
+    <div class="meter" id="meter" role="img" aria-label="Budget consumed, split between payload and gas">
+      <i class="s-pay" id="m-pay" style="width:0"></i>
+      <i class="s-gap"></i>
+      <i class="s-gas" id="m-gas" style="width:0"></i>
+    </div>
+    <div class="meter-foot">
+      <div class="key">
+        <span><i class="sw" style="background:var(--payload)"></i>moved <b class="num" id="k-pay">·</b></span>
+        <span><i class="sw" style="background:var(--gas)"></i>gas <b class="num" id="k-gas">·</b></span>
+      </div>
+      <span class="num" style="color:var(--ink-3);font-size:12.5px"><span id="k-rem">·</span> headroom left</span>
+    </div>
+  </section>
+
+  <div class="legs">
+    <div class="tile"><div class="eyebrow">Calls served</div><div class="v num" id="t-calls">···</div><div class="sub">all time, from contract state</div></div>
+    <div class="tile"><div class="eyebrow">Payload share</div><div class="v num" id="t-pay">···</div><div class="sub">value the calls moved</div></div>
+    <div class="tile"><div class="eyebrow">Gas share</div><div class="v num" id="t-gas">···</div><div class="sub">cost of making them</div></div>
+    <div class="tile"><div class="eyebrow">Cost per call</div><div class="v num" id="t-cpc">···</div><div class="sub">fee plus metered gas</div></div>
+  </div>
+
+  <section class="counter">
+    <h2>Test the cap yourself</h2>
+    <p class="lede">
+      Both buttons call the live contract on Arc mainnet through <code class="num">eth_call</code>.
+      Nothing is signed, nothing is spent, and no wallet is needed. The second one asks for more
+      than the budget allows, so the contract refuses it in front of you.
+    </p>
+    <div class="acts">
+      <button class="primary" id="b-ok" type="button">Simulate one call</button>
+      <button id="b-no" type="button">Ask for more than the budget allows</button>
+    </div>
+
+    <div class="stamp" id="stamp" data-v="idle">
+      <div class="verdict" id="v-label">Awaiting request</div>
+      <div class="lines" id="v-lines">
+        <div class="ln"><b>Press a button and the contract answers.</b></div>
+      </div>
+      <details class="raw" id="v-raw" hidden>
+        <summary>Raw response from the chain</summary>
+        <pre id="v-pre"></pre>
+      </details>
+    </div>
+  </section>
+
+  <section class="proof" id="proof" hidden>
+    <div class="eyebrow">Metering accuracy, most recent call</div>
+    <div class="grid">
+      <div class="cell"><div class="k">Chain charged</div><div class="n num" id="p-actual">·</div></div>
+      <div class="cell"><div class="k">Contract billed</div><div class="n num" id="p-billed">·</div></div>
+      <div class="cell"><div class="k">Difference</div><div class="n num" id="p-drift">·</div></div>
+    </div>
+    <p class="note" id="p-note"></p>
+  </section>
+
+  <section class="ledger">
+    <div class="ledger-head">
+      <div>
+        <h2 style="font-size:19px">Ledger</h2>
+        <p style="color:var(--ink-2);font-size:13.5px;margin-top:4px">Every metered call, read from <code class="num">Spent</code> events.</p>
+      </div>
+      <span class="eyebrow" id="l-count">loading</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Block</th><th>Moved</th><th>Gas</th><th>Charged</th><th>Headroom after</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5" class="sk" style="text-align:center;padding:26px">Reading the chain…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="ledger-foot">
+      <span class="eyebrow" id="l-range"></span>
+      <button id="b-more" type="button" hidden>Load earlier blocks</button>
+    </div>
+  </section>
+
+  <footer class="verify">
+    <div class="eyebrow">Verify any of this</div>
+    <div class="addrs">
+      <div class="addr"><span class="k">PerDiem</span><a id="a-cap" href="#" rel="noopener">·</a></div>
+      <div class="addr"><span class="k">PaidService</span><a id="a-svc" href="#" rel="noopener">·</a></div>
+      <div class="addr"><span class="k">Agent</span><a id="a-agt" href="#" rel="noopener">·</a></div>
+      <div class="addr"><span class="k">Agent identity</span><a id="a-id" href="#" rel="noopener">ERC-8004 #1412</a></div>
+    </div>
+    <p class="note">
+      Both contracts are verified on Arc's explorer, so the source behind every number here is
+      readable. This page holds no keys and sends no transactions. It reads the chain directly
+      from your browser.
+    </p>
+    <p class="err" id="err" hidden></p>
+  </footer>
+
+</div>
+
+<script>
+const RPC = "https://rpc.mainnet.arc.io";
+const EXPLORER = "https://explorer.arc.io";
+const CAP = "0x3795C17A048F8A6e3f4C52007104C744AB1d7B07";
+const SVC = "0x21436b32Cd55d544130e7548c9A7591195F4d33C";
+const AGENT = "0x01dd47d2c01B053b4ce00ce35567D8e20A92EF6E";
+const REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
+const DEPLOY_BLOCK = 24239139;
+const SPENT_TOPIC = "0xe8591e9373e8c4801ffc5bb031277889e3e771aee8c55961028bfc65728c9ba9";
+const CAP_EXCEEDED = "0xf480e285";
+const CHUNK = 5000;          // the RPC refuses wider ranges
+const MAX_CHUNKS_PER_PASS = 10;
+
+const SEL = {
+  remaining: "0x55234ec0", currentWindow: "0xba0bafb4", budget: "0x6f9c2f7a",
+  spentInWindow: "0x909c8266", windowLength: "0x7c70b205", tailGas: "0x4e6f8cb1",
+  pricePerCall: "0xc1907c9b", callsServed: "0x0ae32f4a", execute: "0xb61d27f6",
+  query: "0xa3b61a9c",
+};
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pad = (h) => h.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const hex = (n) => "0x" + n.toString(16);
+const usd = (v, dp = 6) => "$" + (Number(v) / 1e18).toFixed(dp);
+const short = (a) => a.slice(0, 10) + "…" + a.slice(-6);
+
+let rpcId = 0;
+async function rpc(method, params, tries = 4) {
+  for (let a = 0; a < tries; a++) {
+    let j;
+    try {
+      const r = await fetch(RPC, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
+      });
+      j = await r.json();
+    } catch (e) {
+      if (a === tries - 1) throw e;
+      await sleep(400 * (a + 1)); continue;
+    }
+    if (!j.error) return j.result;
+    if (/rate limit/i.test(j.error.message || "")) { await sleep(450 * (a + 1)); continue; }
+    const err = new Error(j.error.message); err.data = j.error.data; throw err;
+  }
+  throw new Error("the node is rate limiting this page, try again shortly");
+}
+const callRaw = (to, data, extra = {}) => rpc("eth_call", [{ to, data, ...extra }, "latest"]);
+const readUint = async (to, data) => BigInt(await callRaw(to, data));
+
+function buildExecute(target, value, inner) {
+  const body = inner.replace(/^0x/, "");
+  const len = body.length / 2;
+  return SEL.execute + pad(target) + pad(hex(value)) + pad(hex(96)) +
+         pad(hex(len)) + body.padEnd(Math.ceil(len / 32) * 64, "0");
+}
+function sampleInner() {
+  const r = crypto.getRandomValues(new Uint8Array(32));
+  return SEL.query + [...r].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function decodeSpent(log) {
+  const d = log.data.slice(2);
+  const w = (i) => BigInt("0x" + d.slice(i * 64, (i + 1) * 64));
+  return { value: w(0), gasCost: w(1), spent: w(2), remaining: w(3),
+           block: parseInt(log.blockNumber, 16), tx: log.transactionHash };
+}
+
+const state = { fee: 0n, gasPrice: 0n, head: 0, scannedTo: 0, logs: [], busy: false };
+
+function fail(msg) { const e = $("err"); e.textContent = msg; e.hidden = false; }
+
+async function loadChain() {
+  const [head, gp] = await Promise.all([rpc("eth_blockNumber", []), rpc("eth_gasPrice", [])]);
+  state.head = parseInt(head, 16);
+  state.gasPrice = BigInt(gp);
+  $("blk").textContent = "block " + state.head.toLocaleString();
+
+  const [rem, win, budget, served, fee, winLen] = await Promise.all([
+    readUint(CAP, SEL.remaining), readUint(CAP, SEL.currentWindow),
+    readUint(CAP, SEL.budget), readUint(SVC, SEL.callsServed),
+    readUint(SVC, SEL.pricePerCall), readUint(CAP, SEL.windowLength),
+  ]);
+  state.fee = fee;
+
+  const spentData = SEL.spentInWindow + pad(hex(win));
+  const spent = BigInt(await callRaw(CAP, spentData));
+
+  $("spent").textContent = usd(spent);
+  $("cap").textContent = "of " + usd(budget, 2);
+  $("win").textContent = "#" + win.toString();
+  $("cap").title = `${Number(winLen) / 3600}h window`;
+  $("k-rem").textContent = usd(rem);
+  $("t-calls").textContent = served.toString();
+  $("t-cpc").textContent = usd(fee + 79499n * state.gasPrice);
+
+  // the window is a tumbling bucket, so it ends at (win + 1) * windowLength
+  const endsAt = Number((win + 1n) * winLen) * 1000;
+  const tick = () => {
+    const left = endsAt - Date.now();
+    if (left <= 0) { $("resets").textContent = "resetting"; return; }
+    const h = Math.floor(left / 3.6e6), m = Math.floor((left % 3.6e6) / 6e4);
+    $("resets").textContent = h > 0 ? `resets in ${h}h ${m}m` : `resets in ${m}m`;
+  };
+  tick(); setInterval(tick, 30000);
+
+  return { budget, spent };
+}
+
+function paint({ budget, spent }) {
+  let pay = 0n, gas = 0n;
+  for (const l of state.logs) { pay += l.value; gas += l.gasCost; }
+  const total = pay + gas;
+
+  if (total > 0n) {
+    const pct = (x) => Number((x * 10000n) / budget) / 100;
+    $("m-pay").style.width = Math.min(pct(pay), 100) + "%";
+    $("m-gas").style.width = Math.min(pct(gas), 100) + "%";
+    $("k-pay").textContent = usd(pay);
+    $("k-gas").textContent = usd(gas);
+    $("t-pay").textContent = (100 * Number(pay) / Number(total)).toFixed(1) + "%";
+    $("t-gas").textContent = (100 * Number(gas) / Number(total)).toFixed(1) + "%";
+  } else if (spent > 0n) {
+    $("m-pay").style.width = Math.min(Number((spent * 10000n) / budget) / 100, 100) + "%";
+  }
+
+  const rows = $("rows");
+  if (!state.logs.length) {
+    rows.innerHTML = `<tr><td colspan="5" class="sk" style="text-align:center;padding:26px">No calls in the blocks scanned so far.</td></tr>`;
+  } else {
+    const recent = state.logs.slice(-40).reverse();
+    rows.innerHTML = recent.map((l) => `
+      <tr>
+        <td><a href="${EXPLORER}/tx/${l.tx}" target="_blank" rel="noopener">${l.block.toLocaleString()}</a></td>
+        <td class="pay">${usd(l.value)}</td>
+        <td class="gas">${usd(l.gasCost)}</td>
+        <td>${usd(l.value + l.gasCost)}</td>
+        <td style="color:var(--ink-3)">${usd(l.remaining)}</td>
+      </tr>`).join("");
+  }
+  $("l-count").textContent = state.logs.length + " call" + (state.logs.length === 1 ? "" : "s");
+  const span = state.head - state.scannedTo;
+  $("l-range").textContent = `scanned ${span.toLocaleString()} blocks, about ${(span * 0.507 / 3600).toFixed(1)}h`;
+  $("b-more").hidden = state.scannedTo <= DEPLOY_BLOCK;
+}
+
+async function scan() {
+  if (state.busy) return;
+  state.busy = true; $("b-more").disabled = true;
+  let to = state.scannedTo ? state.scannedTo - 1 : state.head;
+  for (let i = 0; i < MAX_CHUNKS_PER_PASS && to >= DEPLOY_BLOCK; i++) {
+    const from = Math.max(DEPLOY_BLOCK, to - CHUNK);
+    try {
+      const logs = await rpc("eth_getLogs", [{ address: CAP, topics: [SPENT_TOPIC],
+        fromBlock: hex(from), toBlock: hex(to) }]);
+      state.logs = logs.map(decodeSpent).concat(state.logs);
+    } catch (e) { fail("Could not read logs: " + e.message); break; }
+    state.scannedTo = from;
+    to = from - 1;
+    await sleep(220);
+  }
+  state.busy = false; $("b-more").disabled = false;
+}
+
+async function showReceiptProof() {
+  const last = state.logs[state.logs.length - 1];
+  if (!last) return;
+  try {
+    const r = await rpc("eth_getTransactionReceipt", [last.tx]);
+    if (!r) return;
+    const gasUsed = BigInt(r.gasUsed), eff = BigInt(r.effectiveGasPrice);
+    const billed = last.gasCost / eff;
+    const drift = Number(billed - gasUsed);
+    $("p-actual").textContent = gasUsed.toLocaleString() + " gas";
+    $("p-billed").textContent = billed.toLocaleString() + " gas";
+    $("p-drift").textContent = (drift >= 0 ? "+" : "") + drift.toLocaleString() + " gas";
+    $("p-drift").style.color = Math.abs(drift) <= 50 ? "var(--accept)" : "var(--ink)";
+    $("p-note").textContent =
+      `The contract reimburses the agent whatever it measured, so an error here costs somebody real money. ` +
+      `On this call it was off by ${Math.abs(drift)} gas out of ${gasUsed.toLocaleString()}.`;
+    $("proof").hidden = false;
+  } catch (e) { /* the proof panel stays hidden */ }
+}
+
+function stamp(verdict, label, lines, raw) {
+  const s = $("stamp");
+  s.dataset.v = verdict;
+  $("v-label").textContent = label;
+  $("v-lines").innerHTML = lines.map(([k, v]) => `<div class="ln"><b>${k}</b><span>${v}</span></div>`).join("");
+  if (raw) { $("v-pre").textContent = raw; $("v-raw").hidden = false; } else { $("v-raw").hidden = true; }
+}
+
+async function simulate(overspend) {
+  const btns = [$("b-ok"), $("b-no")];
+  btns.forEach((b) => (b.disabled = true));
+  stamp("idle", "Asking the contract", [["Sending eth_call to Arc mainnet…", ""]]);
+  try {
+    const rem = await readUint(CAP, SEL.remaining);
+    const value = overspend ? rem + 1000000000000000n : state.fee;
+    const data = buildExecute(SVC, value, sampleInner());
+    const gasPrice = hex(state.gasPrice);
+    try {
+      const out = await callRaw(CAP, data, { from: AGENT, gasPrice });
+      const gasLeg = 79499n * state.gasPrice;
+      stamp("accept", "Accepted", [
+        ["Value this call moves", usd(value)],
+        ["Gas it will cost", "about " + usd(gasLeg)],
+        ["Charged to today's budget", "about " + usd(value + gasLeg)],
+        ["Headroom before it", usd(rem)],
+      ], `eth_call returned\n${out}`);
+    } catch (e) {
+      const d = typeof e.data === "string" ? e.data : "";
+      if (d.startsWith(CAP_EXCEEDED)) {
+        const needed = BigInt("0x" + d.slice(10, 74));
+        const avail = BigInt("0x" + d.slice(74, 138));
+        stamp("refuse", "Refused by the cap", [
+          ["This call needed", usd(needed)],
+          ["Budget still available", usd(avail)],
+          ["Short by", usd(needed - avail)],
+        ], `CapExceeded(uint256 needed, uint256 available)\n${d}`);
+      } else {
+        stamp("refuse", "Reverted", [["The contract said", e.message]], d || "");
+      }
+    }
+  } catch (e) {
+    stamp("refuse", "Could not reach the chain", [["Error", e.message]]);
+  } finally {
+    btns.forEach((b) => (b.disabled = false));
+  }
+}
+
+function links() {
+  const set = (id, href, text) => { const a = $(id); a.href = href; a.textContent = text; a.target = "_blank"; };
+  set("a-cap", `${EXPLORER}/address/${CAP}`, CAP);
+  set("a-svc", `${EXPLORER}/address/${SVC}`, SVC);
+  set("a-agt", `${EXPLORER}/address/${AGENT}`, AGENT);
+  set("a-id", `${EXPLORER}/token/${REGISTRY}/instance/1412`, "ERC-8004 #1412");
+}
+
+(async function start() {
+  links();
+  $("b-ok").addEventListener("click", () => simulate(false));
+  $("b-no").addEventListener("click", () => simulate(true));
+  $("b-more").addEventListener("click", async () => { await scan(); paint(await loadChain()); });
+  try {
+    const totals = await loadChain();
+    await scan();
+    paint(totals);
+    await showReceiptProof();
+  } catch (e) {
+    fail("Could not reach Arc: " + e.message);
+    $("blk").textContent = "offline";
+    document.querySelector(".dot").classList.remove("beat");
+  }
+})();
+</script>
+</body>
+</html>
