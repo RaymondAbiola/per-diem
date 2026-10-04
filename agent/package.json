@@ -1,0 +1,12 @@
+{
+  "name": "per-diem-agent",
+  "private": true,
+  "type": "module",
+  "description": "An autonomous agent buying metered calls under an on-chain dollar budget",
+  "scripts": {
+    "start": "node agent.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  }
+}

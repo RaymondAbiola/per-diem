@@ -9,3 +9,7 @@ broadcast/
 *.key
 keystore/
 !.env.example
+
+# agent runtime
+agent/node_modules/
+agent/log/
