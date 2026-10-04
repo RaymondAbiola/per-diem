@@ -13,7 +13,7 @@
   "active": true,
   "registrations": [
     {
-      "agentId": 0,
+      "agentId": 1412,
       "agentRegistry": "eip155:5042:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
     }
   ]
