@@ -1,0 +1,20 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "PerDiem Agent",
+  "description": "An autonomous agent that operates under an on-chain dollar spending cap on Arc. Every call it makes is charged against a USDC budget that counts both the value the call moves and the gas spent making it, so a single budget bounds the agent completely. This is only possible because Arc denominates gas in USDC, which lets the enforcing contract price its own execution in dollars with no oracle. The cap is enforced by PerDiem at 0x3795C17A048F8A6e3f4C52007104C744AB1d7B07, which is verified and readable on Arc. The agent is deterministic automation, not a language model: it checks its remaining headroom, buys one metered call if it fits, and backs off until the next window if it does not.",
+  "image": "https://raw.githubusercontent.com/RaymondAbiola/per-diem/main/agent/agent-card.png",
+  "services": [
+    {
+      "name": "web",
+      "endpoint": "https://github.com/RaymondAbiola/per-diem"
+    }
+  ],
+  "x402Support": false,
+  "active": true,
+  "registrations": [
+    {
+      "agentId": 0,
+      "agentRegistry": "eip155:5042:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+    }
+  ]
+}
