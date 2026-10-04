@@ -1,0 +1,30 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "deployedAt": "2026-10-04T14:41:38Z",
+  "owner": "0xA75356bF1eD0eB422410d544cCE45DF0109f64ec",
+  "agent": "0x01dd47d2c01B053b4ce00ce35567D8e20A92EF6E",
+  "contracts": {
+    "PerDiem": {
+      "address": "0xb35Acbe6e473D17707280dD4BE0fB7acC7c28Bc3",
+      "tx": "0x3c4bdee75607158ddbd6cd9bad126b0d6926410b0961b0c13f24b29d75ffad04",
+      "gasUsed": 987054,
+      "args": {
+        "agent": "0x01dd47d2c01B053b4ce00ce35567D8e20A92EF6E",
+        "budgetPerWindow": "1000000000000000000",
+        "windowLength": 86400,
+        "tailGas": 0,
+        "maxGasPrice": "200000000000"
+      }
+    },
+    "PaidService": {
+      "address": "0xbAFc3b044686958F9e1896DbE60c667b7e5E5C8e",
+      "tx": "0x5a3345a5b52b547411bcdf895c6e1ac34aa3165a4d9490288931cba3ce8fc3e7",
+      "gasUsed": 302938,
+      "args": {
+        "pricePerCall": "2000000000000000",
+        "beneficiary": "0xA75356bF1eD0eB422410d544cCE45DF0109f64ec"
+      }
+    }
+  }
+}

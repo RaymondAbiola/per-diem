@@ -4,9 +4,8 @@
 set -euo pipefail
 
 [ -f .env ] && { set -a; . ./.env; set +a; }
+. "$(dirname "$0")/_network.sh"
 
-RPC_URL="${RPC_URL:-https://rpc.mainnet.arc.io}"
-EXPECTED_CHAIN_ID=5042
 USDC_ERC20="${USDC_ERC20:-0x3600000000000000000000000000000000000000}"
 
 # Gas measured on an Arc mainnet fork. revm's schedule, so treat as estimates:
@@ -29,10 +28,8 @@ for v in PRIVATE_KEY AGENT_KEY; do
 done
 
 printf '\n\033[1mnetwork\033[0m\n'
-CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL") || die "cannot reach $RPC_URL"
-[ "$CHAIN_ID" = "$EXPECTED_CHAIN_ID" ] \
-  && pass "chain id $CHAIN_ID (Arc mainnet)" \
-  || bad "chain id $CHAIN_ID, expected $EXPECTED_CHAIN_ID"
+assert_chain
+pass "reachable and chain id matches $NETWORK"
 GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL")
 printf '  gas price  %s gwei\n' "$(python3 -c "print(f'{int($GAS_PRICE)/1e9:.3f}')")"
 SYM=$(cast call "$USDC_ERC20" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?')

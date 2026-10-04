@@ -1,157 +1,115 @@
 #!/usr/bin/env bash
-# Calibrate tailGas against real Arc mainnet, then verify the reimbursement is honest.
+# Measure tailGas against a real Arc chain, using the contracts actually deployed.
 #
-# Local EVM gas numbers do not transfer to Arc. arc-meter measured cold SLOAD at
-# 10,761 gas on Arc against 2,816 locally, so every constant in here has to come from
-# the chain itself rather than from a local test run. That is what this script is for.
+# tailGas covers the work execute() cannot observe from inside itself: the storage
+# write, the reimbursement transfer, the event and the lock release. All of it happens
+# after the last gasleft() reading, so the only honest way to size it is to compare
+# what the contract billed against what the receipt says the transaction really cost.
 #
-# Usage:
-#   export PRIVATE_KEY=0x...        # owner, funds and deploys
-#   export AGENT_KEY=0x...          # the agent, submits metered calls
-#   ./script/calibrate.sh
+# This has to run on a real Arc chain. A local fork runs revm's gas schedule, and
+# arc-meter measured cold SLOAD at 10,761 gas on Arc against 2,816 locally, so fork
+# numbers are not transferable.
+#
+#   NETWORK=testnet ./script/calibrate.sh
 set -euo pipefail
 
-RPC_URL="${RPC_URL:-https://rpc.mainnet.arc.io}"
-ROUNDS="${ROUNDS:-5}"
-EXPECTED_CHAIN_ID=5042
+[ -z "${PRIVATE_KEY:-}" ] && [ -f .env ] && { set -a; . ./.env; set +a; }
+. "$(dirname "$0")/_network.sh"
 
-# $1.00 in 18 decimal native units
-ONE_DOLLAR=1000000000000000000
-BUDGET="${BUDGET:-$ONE_DOLLAR}"          # $1 per window for calibration
-WINDOW="${WINDOW:-86400}"
-MAX_GAS_PRICE="${MAX_GAS_PRICE:-200000000000}"  # 200 gwei ceiling
-PRICE_PER_CALL="${PRICE_PER_CALL:-1000000000000}"  # $0.000001 per service call
+ROUNDS="${ROUNDS:-8}"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 usd() { python3 -c "print(f'\${int($1)/1e18:.8f}')"; }
 
-# Load .env unless keys are already in the environment (fork runs set their own).
-if [ -z "${PRIVATE_KEY:-}" ] && [ -f .env ]; then
-  set -a; . ./.env; set +a
-fi
-
-: "${PRIVATE_KEY:?set PRIVATE_KEY (owner)}"
-: "${AGENT_KEY:?set AGENT_KEY (agent)}"
-
-# Refuse to run on placeholders. Reports the variable name only, never its value.
 for v in PRIVATE_KEY AGENT_KEY; do
   case "${!v:-}" in
-    *REPLACE_ME*|"") die "$v is still a placeholder in .env, replace it first" ;;
+    *REPLACE_ME*|"") die "$v is still a placeholder in .env" ;;
   esac
 done
 
+[ -f "$DEPLOYMENTS" ] || die "no $DEPLOYMENTS, run deploy.sh for this network first"
+read -r CAP SERVICE < <(python3 -c "
+import json; d=json.load(open('$DEPLOYMENTS'))['contracts']
+print(d['PerDiem']['address'], d['PaidService']['address'])")
+
+say "target"
+assert_chain
+echo "  PerDiem      $CAP"
+echo "  PaidService  $SERVICE"
+
 OWNER=$(cast wallet address --private-key "$PRIVATE_KEY")
 AGENT=$(cast wallet address --private-key "$AGENT_KEY")
-
-say "preflight"
-CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL")
-[ "$CHAIN_ID" = "$EXPECTED_CHAIN_ID" ] || die "wrong chain: got $CHAIN_ID, want $EXPECTED_CHAIN_ID"
 GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL")
-OWNER_BAL=$(cast balance "$OWNER" --rpc-url "$RPC_URL")
-AGENT_BAL=$(cast balance "$AGENT" --rpc-url "$RPC_URL")
+FEE=$(cast call "$SERVICE" 'pricePerCall()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+TAIL=$(cast call "$CAP" 'tailGas()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+BUDGET=$(cast call "$CAP" 'budgetPerWindow()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+CAP_BAL=$(cast balance "$CAP" --rpc-url "$RPC_URL")
 
-echo "chain id      $CHAIN_ID (Arc mainnet)"
-echo "gas price     $GAS_PRICE wei ($(python3 -c "print(f'{int($GAS_PRICE)/1e9:.3f}')") gwei)"
-echo "owner         $OWNER  $(usd "$OWNER_BAL")"
-echo "agent         $AGENT  $(usd "$AGENT_BAL")"
+echo "  fee          $(usd "$FEE")"
+echo "  tailGas      $TAIL"
+echo "  budget       $(usd "$BUDGET")"
+echo "  cap balance  $(usd "$CAP_BAL")"
 
-# Deploy plus calibration rounds plus funding. Generous but still cents.
-MIN_OWNER=$((ONE_DOLLAR / 100))
-if [ "$(python3 -c "print(1 if int('$OWNER_BAL') < $MIN_OWNER else 0)")" = "1" ]; then
-  die "owner needs USDC on Arc mainnet. Bridge via portal.arc.io, then rerun.
-       Gas on Arc is USDC, so the bridged USDC funds everything."
+[ "$TAIL" = "0" ] || printf '\033[33m  warning: tailGas is already %s, the measured gap will be the residual\033[0m\n' "$TAIL"
+
+# The cap pays out the fee plus the reimbursement each round, so it needs a float.
+NEED=$(python3 -c "print($ROUNDS * ($FEE + 10**16))")
+if python3 -c "import sys; sys.exit(0 if int('$CAP_BAL') < $NEED else 1)"; then
+  say "funding the cap"
+  cast send "$CAP" --value "$NEED" --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" >/dev/null
+  echo "  sent $(usd "$NEED")"
 fi
-if [ "$(python3 -c "print(1 if int('$AGENT_BAL') == 0 else 0)")" = "1" ]; then
-  die "agent needs a small USDC float to front gas. It gets reimbursed per call."
-fi
-
-say "deploying"
-SERVICE=$(forge create src/PaidService.sol:PaidService \
-  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast \
-  --constructor-args "$PRICE_PER_CALL" "$OWNER" \
-  | grep -oE 'Deployed to: 0x[0-9a-fA-F]{40}' | grep -oE '0x[0-9a-fA-F]{40}')
-[ -n "$SERVICE" ] || die "PaidService deploy failed"
-echo "PaidService  $SERVICE"
-
-# tailGas starts at 0 on purpose: the gap it leaves is exactly what we measure.
-PERDIEM=$(forge create src/PerDiem.sol:PerDiem \
-  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast \
-  --constructor-args "$AGENT" "$BUDGET" "$WINDOW" 0 "$MAX_GAS_PRICE" \
-  | grep -oE 'Deployed to: 0x[0-9a-fA-F]{40}' | grep -oE '0x[0-9a-fA-F]{40}')
-[ -n "$PERDIEM" ] || die "PerDiem deploy failed"
-echo "PerDiem      $PERDIEM"
-
-say "funding PerDiem"
-cast send "$PERDIEM" --value "$BUDGET" --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" >/dev/null
-echo "sent $(usd "$BUDGET") to the cap"
 
 SPENT_TOPIC=$(cast keccak "Spent(address,uint256,uint256,uint256,uint256)")
 
-say "calibration rounds"
-printf '%-6s %-12s %-12s %-10s %s\n' round reported actual delta_gas note
-: > /tmp/perdiem_deltas.txt
+say "$ROUNDS rounds"
+printf '  %-3s %-10s %-10s %-10s %-9s %s\n' '#' gasUsed billed gap cost note
+: > /tmp/perdiem_gaps.txt
 
 for i in $(seq 1 "$ROUNDS"); do
-  INPUT=$(cast keccak "round-$i")
-  CALLDATA=$(cast calldata "query(bytes32)" "$INPUT")
+  CD=$(cast calldata "query(bytes32)" "$(cast keccak "round-$i-$(date +%s%N)")")
 
-  TX=$(cast send "$PERDIEM" \
-    "execute(address,uint256,bytes)" "$SERVICE" "$PRICE_PER_CALL" "$CALLDATA" \
+  TX=$(cast send "$CAP" "execute(address,uint256,bytes)" "$SERVICE" "$FEE" "$CD" \
     --rpc-url "$RPC_URL" --private-key "$AGENT_KEY" \
-    | grep -oE '^transactionHash +0x[0-9a-f]{64}' | grep -oE '0x[0-9a-f]{64}')
-  [ -n "$TX" ] || die "execute() round $i failed"
+    | grep -oE '^transactionHash +0x[0-9a-f]{64}' | grep -oE '0x[0-9a-f]{64}') \
+    || die "round $i failed to send"
+  [ -n "$TX" ] || die "round $i produced no tx hash"
 
-  RECEIPT=$(cast receipt "$TX" --rpc-url "$RPC_URL" --json)
-
-  read -r GAS_USED EFF_PRICE REPORTED < <(python3 - "$RECEIPT" "$SPENT_TOPIC" <<'PY'
+  read -r GAS_USED EFF REPORTED < <(
+    cast receipt "$TX" --rpc-url "$RPC_URL" --json | python3 -c "
 import sys, json
-r = json.loads(sys.argv[1]); topic = sys.argv[2].lower()
-gas_used = int(r["gasUsed"], 16) if isinstance(r["gasUsed"], str) else int(r["gasUsed"])
-eff = r.get("effectiveGasPrice")
-eff = int(eff, 16) if isinstance(eff, str) else int(eff)
-reported = 0
-for log in r["logs"]:
-    if log["topics"][0].lower() == topic:
-        data = log["data"][2:]
-        # value, gasCost, windowSpent, windowRemaining
-        reported = int(data[64:128], 16)
-print(gas_used, eff, reported)
-PY
-)
+r = json.load(sys.stdin)
+h = lambda v: int(v, 16) if isinstance(v, str) else int(v)
+rep = 0
+for log in r['logs']:
+    if log['topics'][0].lower() == '$SPENT_TOPIC'.lower():
+        rep = int(log['data'][2:][64:128], 16)   # value, gasCost, spent, remaining
+print(h(r['gasUsed']), h(r['effectiveGasPrice']), rep)")
 
-  # What the agent truly paid in gas for this transaction, straight from the receipt.
-  ACTUAL=$((GAS_USED * EFF_PRICE))
-  # What the contract measured and reimbursed. Both are pure gas, no service fee.
-  REPORTED_GAS=$REPORTED
-  DELTA_GAS=$(python3 -c "print(max(0, ($ACTUAL - $REPORTED_GAS)//$EFF_PRICE))")
-  echo "$DELTA_GAS" >> /tmp/perdiem_deltas.txt
-
-  NOTE=$([ "$DELTA_GAS" -gt 0 ] && echo "under by ${DELTA_GAS}g" || echo "covered")
-  printf '%-6s %-12s %-12s %-10s %s\n' "$i" "$REPORTED_GAS" "$ACTUAL" "$DELTA_GAS" "$NOTE"
+  # Pure gas on both sides: the receipt's total, versus what the contract reimbursed.
+  GAP=$(python3 -c "print(max(0, ($GAS_USED*$EFF - $REPORTED)//$EFF))")
+  echo "$GAP" >> /tmp/perdiem_gaps.txt
+  BILLED=$(python3 -c "print($REPORTED//$EFF)")
+  NOTE=$([ "$i" = "1" ] && echo "cold window" || echo "")
+  printf '  %-3s %-10s %-10s %-10s %-9s %s\n' "$i" "$GAS_USED" "$BILLED" "$GAP" \
+    "$(python3 -c "print(f'{$GAS_USED*$EFF/1e18:.6f}')")" "$NOTE"
 done
 
 say "result"
 python3 - <<PY
-deltas = [int(x) for x in open('/tmp/perdiem_deltas.txt') if x.strip()]
-gp = $GAS_PRICE
-hi, avg = max(deltas), sum(deltas)//len(deltas)
-rec = hi + (hi // 10)   # cover the worst round plus 10%
-print(f"deltas (gas)      {deltas}")
-print(f"worst / mean      {hi} / {avg}")
-print(f"recommended       tailGas = {rec}")
-print(f"costs the agent   \${rec*gp/1e18:.8f} per call if left at 0")
+gaps=[int(x) for x in open('/tmp/perdiem_gaps.txt') if x.strip()]
+gp=$GAS_PRICE
+cold, warm = gaps[0], gaps[1:] or gaps
+hi, mean = max(warm), sum(warm)//len(warm)
+print(f"  cold first call   {cold:,} gas")
+print(f"  warm calls        min {min(warm):,}  mean {mean:,}  max {hi:,}")
 print()
-print("Set it with:")
-print(f"  cast send $PERDIEM 'calibrateTailGas(uint256)' {rec} \\\\")
-print(f"    --rpc-url $RPC_URL --private-key \$PRIVATE_KEY")
+print(f"  calibrate to worst warm case : {hi + hi//20:,}  (+5% margin)")
+print(f"  calibrate to the cold case   : {cold + cold//20:,}  (never short, overpays warm calls)")
+print()
+print(f"  fork said 26,135. Arc says {mean:,} on a warm call, {100*(mean-26135)/26135:+.1f}%.")
+print()
+print("  erring high means the agent's float drifts up and the cap drains faster.")
+print("  erring low means the agent slowly funds the shortfall itself.")
 PY
-
-cat <<EOF
-
-addresses
-  PaidService  $SERVICE
-  PerDiem      $PERDIEM
-  owner        $OWNER
-  agent        $AGENT
-EOF

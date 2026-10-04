@@ -4,23 +4,32 @@
 # tailGas is deliberately 0 here. The gap that leaves is exactly what the
 # calibration step measures against real receipts.
 #
-# Deployed addresses are written to deployments/arc-mainnet.json, which is public
+# Deployed addresses are written to deployments/arc-<network>.json, which is public
 # data and belongs in the repo. Nothing is written back to .env.
 set -euo pipefail
 
 [ -f .env ] && { set -a; . ./.env; set +a; }
+. "$(dirname "$0")/_network.sh"
+OUT="$DEPLOYMENTS"
 
-RPC_URL="${RPC_URL:-https://rpc.mainnet.arc.io}"
-EXPECTED_CHAIN_ID=5042
-OUT=deployments/arc-mainnet.json
-
-# $0.002, at rough parity with gas so the payload and execution legs are both
-# visible on the dashboard. Recoverable via sweep(), so it costs nothing net.
-PRICE_PER_CALL="${PRICE_PER_CALL:-2000000000000000}"
+# $0.002, at rough parity with gas so the payload and execution legs are both visible
+# on the dashboard. Recoverable via sweep(), so it costs nothing net.
+#
+# Deliberately NOT read from the environment. It is immutable once deployed, and a
+# stale PRICE_PER_CALL in .env already silently overrode this default once and shipped
+# a service priced 2000x too low. Deployment parameters belong in version control.
+PRICE_PER_CALL=2000000000000000
 BUDGET="${BUDGET:-1000000000000000000}"
 WINDOW="${WINDOW:-86400}"
 MAX_GAS_PRICE="${MAX_GAS_PRICE:-200000000000}"
-TAIL_GAS=0
+# Measured on Arc testnet (chain 5042002), 8 rounds, zero variance across warm calls.
+# Covers both the genuinely unobservable tail (the storage write, the reimbursement
+# transfer, the event, the lock release) and the calldata floor's deliberate
+# understatement, because calibration measured the total gap with tailGas at 0.
+#
+# A local fork said 26,135 for this. Arc says 14,187, so the fork was 84% high. Do not
+# re-derive this number anywhere but a real Arc chain.
+TAIL_GAS=14187
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -35,15 +44,15 @@ if [ -f "$OUT" ] && [ "${1:-}" != "--force" ]; then
   die "$OUT already exists. These contracts are deployed. Pass --force to redeploy."
 fi
 
-CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL")
-[ "$CHAIN_ID" = "$EXPECTED_CHAIN_ID" ] || die "wrong chain: $CHAIN_ID, want $EXPECTED_CHAIN_ID"
+assert_chain
+CHAIN_ID="$CHAIN_ID_EXPECTED"
 
 OWNER=$(cast wallet address --private-key "$PRIVATE_KEY")
 AGENT=$(cast wallet address --private-key "$AGENT_KEY")
 GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL")
 BAL_BEFORE=$(cast balance "$OWNER" --rpc-url "$RPC_URL")
 
-say "deploying to Arc mainnet (chain $CHAIN_ID) at $(python3 -c "print(f'{int($GAS_PRICE)/1e9:.2f}')") gwei"
+say "deploying to Arc $NETWORK (chain $CHAIN_ID) at $(python3 -c "print(f'{int($GAS_PRICE)/1e9:.2f}')") gwei"
 echo "  owner  $OWNER"
 echo "  agent  $AGENT"
 
@@ -89,7 +98,7 @@ PY
 mkdir -p deployments
 cat > "$OUT" <<JSON
 {
-  "network": "arc-mainnet",
+  "network": "arc-$NETWORK",
   "chainId": $CHAIN_ID,
   "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "owner": "$OWNER",
@@ -121,4 +130,5 @@ cat > "$OUT" <<JSON
 JSON
 
 say "wrote $OUT"
+echo "  explorer   $EXPLORER/address/$PERDIEM"
 cat "$OUT"
