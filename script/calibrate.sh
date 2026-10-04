@@ -26,8 +26,20 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 usd() { python3 -c "print(f'\${int($1)/1e18:.8f}')"; }
 
+# Load .env unless keys are already in the environment (fork runs set their own).
+if [ -z "${PRIVATE_KEY:-}" ] && [ -f .env ]; then
+  set -a; . ./.env; set +a
+fi
+
 : "${PRIVATE_KEY:?set PRIVATE_KEY (owner)}"
 : "${AGENT_KEY:?set AGENT_KEY (agent)}"
+
+# Refuse to run on placeholders. Reports the variable name only, never its value.
+for v in PRIVATE_KEY AGENT_KEY; do
+  case "${!v:-}" in
+    *REPLACE_ME*|"") die "$v is still a placeholder in .env, replace it first" ;;
+  esac
+done
 
 OWNER=$(cast wallet address --private-key "$PRIVATE_KEY")
 AGENT=$(cast wallet address --private-key "$AGENT_KEY")

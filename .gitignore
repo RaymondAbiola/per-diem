@@ -1,4 +1,11 @@
 out/
 cache/
 broadcast/
+
+# secrets, never commit
 .env
+.env.local
+.env.*.local
+*.key
+keystore/
+!.env.example
