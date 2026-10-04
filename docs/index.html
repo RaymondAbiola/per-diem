@@ -179,12 +179,29 @@ td.gas { color: var(--gas); }
   border-radius: 3px; padding: 14px 16px; margin-bottom: 22px; font-family: var(--mono); font-size: 14px; }
 .diag b { display: block; color: var(--refuse); font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px; }
 .diag span { color: var(--ink-2); word-break: break-word; }
+.diag-fix { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.diag-fix label { display: block; font-size: 12.5px; color: var(--ink-3); margin-bottom: 7px; }
+.diag-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.diag-row input {
+  flex: 1 1 240px; min-width: 0; font-family: var(--mono); font-size: 14px; padding: 9px 12px;
+  border: 1px solid var(--line-2); border-radius: 3px; background: var(--surface); color: var(--ink);
+}
+.diag-row input:focus-visible { outline: 2px solid var(--payload); outline-offset: 1px; }
 .sk { color: var(--ink-3); }
 </style>
 
 <div class="wrap">
 
-  <div id="diag" class="diag" hidden><b id="diag-t">Loading</b><span id="diag-m"></span></div>
+  <div id="diag" class="diag" hidden>
+    <b id="diag-t">Loading</b><span id="diag-m"></span>
+    <div class="diag-fix">
+      <label for="rpc-in">Use a different Arc RPC</label>
+      <div class="diag-row">
+        <input id="rpc-in" type="url" placeholder="https://your-arc-rpc.example" spellcheck="false">
+        <button id="rpc-go" type="button">Retry</button>
+      </div>
+    </div>
+  </div>
 
   <header class="masthead">
     <div class="row">
@@ -312,16 +329,26 @@ td.gas { color: var(--gas); }
 </div>
 
 <script>
-// Four independent Arc endpoints. A privacy or ad-blocking extension will happily
-// block a crypto RPC domain, and that failure looks identical to the network being
-// down, so the page rotates rather than giving up on the first refusal.
-const ENDPOINTS = [
+// Endpoints on five different registrable domains. A privacy or ad-blocking
+// extension will block a crypto RPC, and blocking by domain takes out every
+// subdomain at once, so alternatives on arc.io alone are no alternatives at all.
+//
+// They do not have equal capability. All five answer live reads; only two will serve
+// historical logs on a free tier, so the ledger draws from a smaller pool than the
+// headline figures and the page stays useful when only the weaker ones are reachable.
+const READ_RPCS = [
   "https://rpc.mainnet.arc.io",
-  "https://rpc.blockdaemon.mainnet.arc.io",
-  "https://rpc.drpc.mainnet.arc.io",
-  "https://rpc.quicknode.mainnet.arc.io",
+  "https://arc.gateway.tenderly.co",
+  "https://arc.drpc.org",
+  "https://arc.rpc.thirdweb.com",
+  "https://arc-rpc.publicnode.com",
 ];
-let epIndex = 0;
+const LOG_RPCS = [
+  "https://rpc.mainnet.arc.io",
+  "https://arc.gateway.tenderly.co",
+];
+let override = null;
+const cursor = { read: 0, log: 0 };
 const EXPLORER = "https://explorer.arc.io";
 const CAP = "0x3795C17A048F8A6e3f4C52007104C744AB1d7B07";
 const SVC = "0x21436b32Cd55d544130e7548c9A7591195F4d33C";
@@ -348,10 +375,17 @@ const usd = (v, dp = 6) => "$" + (Number(v) / 1e18).toFixed(dp);
 const short = (a) => a.slice(0, 10) + "…" + a.slice(-6);
 
 let rpcId = 0;
+
+function pool(method) {
+  if (override) return { list: [override], key: "read" };
+  return method === "eth_getLogs" ? { list: LOG_RPCS, key: "log" } : { list: READ_RPCS, key: "read" };
+}
+
 async function rpc(method, params) {
+  const { list, key } = pool(method);
   let networkFails = 0;
-  for (let attempt = 0; attempt < ENDPOINTS.length * 3; attempt++) {
-    const url = ENDPOINTS[epIndex];
+  for (let attempt = 0; attempt < list.length * 3; attempt++) {
+    const url = list[cursor[key] % list.length];
     let j;
     try {
       const r = await fetch(url, {
@@ -360,25 +394,31 @@ async function rpc(method, params) {
       });
       j = await r.json();
     } catch (e) {
-      // fetch rejecting outright is a blocked request, a dead host or no network
+      // fetch rejecting outright means blocked, dead, or no network
       networkFails++;
-      epIndex = (epIndex + 1) % ENDPOINTS.length;
-      if (networkFails >= ENDPOINTS.length) {
-        const err = new Error("every Arc endpoint refused the request");
+      cursor[key]++;
+      if (networkFails >= list.length) {
+        const err = new Error(`every ${key === "log" ? "log-capable " : ""}endpoint refused the request`);
         err.blocked = true; throw err;
       }
       continue;
     }
-    if (!j.error) { showEndpoint(); return j.result; }
-    if (/rate limit/i.test(j.error.message || "")) { await sleep(420 * (attempt + 1)); continue; }
-    const err = new Error(j.error.message); err.data = j.error.data; throw err;
+    if (!j.error) { showEndpoint(url); return j.result; }
+    const msg = j.error.message || "";
+    if (/rate limit/i.test(msg)) { await sleep(420 * (attempt + 1)); continue; }
+    // capability limits are per-endpoint, so move on rather than give up
+    if (/not supported|require|exceeded|too large|archive/i.test(msg)) { cursor[key]++; continue; }
+    const err = new Error(msg); err.data = j.error.data; throw err;
   }
-  throw new Error("the node is rate limiting this page, try again shortly");
+  const err = new Error(`no endpoint could serve ${method}`);
+  err.exhausted = true; throw err;
 }
-function showEndpoint() {
+
+function showEndpoint(url) {
   const el = $("ep");
-  if (el) el.textContent = ENDPOINTS[epIndex].replace("https://", "");
+  if (el) el.textContent = url.replace("https://", "");
 }
+
 const callRaw = (to, data, extra = {}) => rpc("eth_call", [{ to, data, ...extra }, "latest"]);
 const readUint = async (to, data) => BigInt(await callRaw(to, data));
 
@@ -597,6 +637,15 @@ function links() {
   $("b-ok").addEventListener("click", () => simulate(false));
   $("b-no").addEventListener("click", () => simulate(true));
   $("b-more").addEventListener("click", async () => { await scan(); paint(await loadChain()); });
+  $("rpc-go").addEventListener("click", async () => {
+    const v = $("rpc-in").value.trim();
+    if (!v) return;
+    override = v; cursor.read = 0; cursor.log = 0;
+    $("diag").hidden = true; $("err").hidden = true;
+    state.logs = []; state.scannedTo = 0;
+    try { const t = await loadChain(); await scan(); paint(t); await showReceiptProof(); }
+    catch (e) { fail(`${stage}: ${e.message}`, !!e.blocked); }
+  });
   try {
     const totals = await loadChain();
     await scan();
