@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import {
   createPublicClient,
   createWalletClient,
+  fallback,
   defineChain,
   encodeFunctionData,
   formatUnits,
@@ -34,12 +35,25 @@ const NETWORK = process.env.NETWORK ?? "mainnet";
 const INTERVAL_S = Number(process.env.INTERVAL ?? 60);
 const MAX_CALLS = Number(process.env.MAX_CALLS ?? Infinity);
 
+// Ordered by measured latency, fastest first. The canonical arc.io host is last on
+// purpose: it went down mid-run once and, being the only endpoint, took the agent with
+// it. An unattended loop cannot depend on one provider staying up.
 const NETWORKS = {
-  mainnet: { id: 5042, rpc: "https://rpc.mainnet.arc.io", explorer: "https://explorer.arc.io" },
+  mainnet: {
+    id: 5042,
+    explorer: "https://explorer.arc.io",
+    rpcs: [
+      "https://arc.gateway.tenderly.co",
+      "https://arc.drpc.org",
+      "https://arc.rpc.thirdweb.com",
+      "https://arc-rpc.publicnode.com",
+      "https://rpc.mainnet.arc.io",
+    ],
+  },
   testnet: {
     id: 5042002,
-    rpc: "https://rpc.testnet.arc.io",
     explorer: "https://explorer.testnet.arc.io",
+    rpcs: ["https://rpc.testnet.arc.io"],
   },
 };
 
@@ -51,7 +65,7 @@ function arcChain(cfg) {
     id: cfg.id,
     name: `Arc ${NETWORK}`,
     nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 },
-    rpcUrls: { default: { http: [cfg.rpc] } },
+    rpcUrls: { default: { http: cfg.rpcs } },
     blockExplorers: { default: { name: "Blockscout", url: cfg.explorer } },
   });
 }
@@ -184,7 +198,9 @@ async function main() {
   const service = deployments.contracts.PaidService.address;
 
   const chain = arcChain(cfg);
-  const transport = http(cfg.rpc);
+  const transport = fallback(
+    cfg.rpcs.map((u) => http(u, { retryCount: 2, retryDelay: 400, timeout: 15_000 })),
+  );
   const pub = createPublicClient({ chain, transport });
   const account = privateKeyToAccount(key);
   const wallet = createWalletClient({ account, chain, transport });
