@@ -232,6 +232,7 @@ td.gas { color: var(--gas); }
         <div class="eyebrow">Window</div>
         <div class="num" id="win" style="font-size:19px">···</div>
         <div class="num" id="resets" style="font-size:14px;color:var(--ink-3)">resets in ···</div>
+        <div id="win-note" style="font-size:13px;color:var(--ink-3)"></div>
       </div>
     </div>
 
@@ -358,7 +359,16 @@ const DEPLOY_BLOCK = 24239139;
 const SPENT_TOPIC = "0xe8591e9373e8c4801ffc5bb031277889e3e771aee8c55961028bfc65728c9ba9";
 const CAP_EXCEEDED = "0xf480e285";
 const CHUNK = 5000;          // the RPC refuses wider ranges
-const MAX_CHUNKS_PER_PASS = 10;
+
+// Arc mints a block every 0.507s, so a quiet day puts the last activity 170,000 blocks
+// behind the head. A fixed 10-chunk scan found nothing whenever the agent had not run
+// that morning, leaving a visitor with an empty ledger and a button to press. Keep going
+// until there is something worth showing, or the whole history has been read.
+const WANT_EVENTS = 25;
+// Six requests in flight is the measured sweet spot against these endpoints: 11s to walk
+// back 34h, against 32s one at a time. Eight is slower, because the nodes start throttling.
+const BATCH = 6;
+const MAX_ROUNDS = 16;
 
 const SEL = {
   remaining: "0x55234ec0", currentWindow: "0xba0bafb4", budget: "0x6f9c2f7a",
@@ -515,6 +525,9 @@ function paint({ budget, spent }) {
     $("m-pay").style.width = Math.min(Number((spent * 10000n) / budget) / 100, 100) + "%";
   }
 
+  const note = $("win-note");
+  if (note) note.textContent = spent === 0n ? "no calls yet in this window" : "";
+
   const rows = $("rows");
   if (!state.logs.length) {
     rows.innerHTML = `<tr><td colspan="5" class="sk" style="text-align:center;padding:26px">No calls in the blocks scanned so far.</td></tr>`;
@@ -535,23 +548,59 @@ function paint({ budget, spent }) {
   $("b-more").hidden = state.scannedTo <= DEPLOY_BLOCK;
 }
 
-async function scan() {
+async function scan(deeper) {
   at("reading Spent events");
   if (state.busy) return;
   state.busy = true; $("b-more").disabled = true;
+
   let to = state.scannedTo ? state.scannedTo - 1 : state.head;
-  for (let i = 0; i < MAX_CHUNKS_PER_PASS && to >= DEPLOY_BLOCK; i++) {
-    const from = Math.max(DEPLOY_BLOCK, to - CHUNK);
+  let rounds = 0;
+  const maxRounds = deeper ? 4 : MAX_ROUNDS;
+
+  while (rounds < maxRounds && to >= DEPLOY_BLOCK) {
+    if (!deeper && state.logs.length >= WANT_EVENTS) break;
+
+    const jobs = [];
+    let lowest = to;
+    for (let k = 0; k < BATCH && to >= DEPLOY_BLOCK; k++) {
+      const from = Math.max(DEPLOY_BLOCK, to - CHUNK);
+      jobs.push(rpc("eth_getLogs", [{ address: CAP, topics: [SPENT_TOPIC],
+        fromBlock: hex(from), toBlock: hex(to) }]));
+      lowest = from;
+      to = from - 1;
+    }
+
+    let results;
     try {
-      const logs = await rpc("eth_getLogs", [{ address: CAP, topics: [SPENT_TOPIC],
-        fromBlock: hex(from), toBlock: hex(to) }]);
-      state.logs = logs.map(decodeSpent).concat(state.logs);
-    } catch (e) { fail("Could not read logs: " + e.message); break; }
-    state.scannedTo = from;
-    to = from - 1;
-    await sleep(220);
+      results = await Promise.all(jobs);
+    } catch (e) {
+      if (e.blocked) fail(e.message, true);
+      else fail("Could not read the ledger: " + e.message);
+      break;
+    }
+
+    // the batch comes back in whatever order it finishes, so sort by block
+    state.logs = results.flat().map(decodeSpent).concat(state.logs)
+      .sort((a, b) => a.block - b.block);
+    state.scannedTo = lowest;
+    rounds++;
+    progress();
+    await sleep(120);
   }
   state.busy = false; $("b-more").disabled = false;
+}
+
+// Say what the scan is doing rather than sitting blank through it.
+function progress() {
+  const hours = ((state.head - state.scannedTo) * 0.507 / 3600).toFixed(1);
+  if (!state.logs.length) {
+    $("rows").innerHTML =
+      '<tr><td colspan="5" class="sk" style="text-align:center;padding:26px">' +
+      `Looking back through the chain, ${hours}h so far…</td></tr>`;
+  }
+  $("l-count").textContent = state.logs.length
+    ? state.logs.length + " call" + (state.logs.length === 1 ? "" : "s")
+    : `searching, ${hours}h back`;
 }
 
 async function showReceiptProof() {
@@ -636,7 +685,7 @@ function links() {
   links();
   $("b-ok").addEventListener("click", () => simulate(false));
   $("b-no").addEventListener("click", () => simulate(true));
-  $("b-more").addEventListener("click", async () => { await scan(); paint(await loadChain()); });
+  $("b-more").addEventListener("click", async () => { await scan(true); paint(await loadChain()); });
   $("rpc-go").addEventListener("click", async () => {
     const v = $("rpc-in").value.trim();
     if (!v) return;
