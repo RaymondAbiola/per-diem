@@ -88,7 +88,13 @@ a { color: var(--payload); text-decoration-thickness: 1px; text-underline-offset
   .dot.beat { animation: beat 2.4s ease-in-out infinite; }
 }
 @keyframes beat { 0%,100%{opacity:1} 50%{opacity:.25} }
-.thesis { margin-top: 14px; max-width: 60ch; color: var(--ink-2); font-size: 18.5px; line-height: 1.55; }
+.thesis {
+  margin-top: 14px; max-width: 64ch; color: var(--ink-2);
+  font-size: 18.5px; line-height: 1.55;
+  /* even the line lengths, otherwise a narrow ragged block sits oddly under a
+     full-width rule and reads as a layout accident rather than a measure */
+  text-wrap: balance;
+}
 .thesis strong { color: var(--ink); font-weight: 600; }
 
 /* sheet ------------------------------------------------------------------- */
@@ -120,7 +126,7 @@ a { color: var(--payload); text-decoration-thickness: 1px; text-underline-offset
 /* counter (the simulator) -------------------------------------------------- */
 .counter { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow); padding: 24px; margin-bottom: 22px; }
 .counter h2 { font-size: 25px; }
-.counter .lede { color: var(--ink-2); margin-top: 9px; max-width: 62ch; font-size: 16.5px; }
+.counter .lede { color: var(--ink-2); margin-top: 9px; max-width: 64ch; font-size: 16.5px; text-wrap: pretty; }
 .acts { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 button {
   font-family: var(--display); font-size: 16px; font-weight: 550;
