@@ -337,16 +337,20 @@ td.gas { color: var(--gas); }
 // They do not have equal capability. All five answer live reads; only two will serve
 // historical logs on a free tier, so the ledger draws from a smaller pool than the
 // headline figures and the page stays useful when only the weaker ones are reachable.
+// Ordered by measured median latency, fastest first, because the first entry serves
+// almost every request. The canonical arc.io host sits last on purpose: it was timing
+// out on 4 of 4 probes while this order was being set, and having it first meant every
+// request waited for it to fail before falling through.
 const READ_RPCS = [
-  "https://rpc.mainnet.arc.io",
-  "https://arc.gateway.tenderly.co",
-  "https://arc.drpc.org",
-  "https://arc.rpc.thirdweb.com",
-  "https://arc-rpc.publicnode.com",
+  "https://arc.gateway.tenderly.co",   // 223ms
+  "https://arc.drpc.org",              // 314ms
+  "https://arc.rpc.thirdweb.com",      // 466ms
+  "https://arc-rpc.publicnode.com",    // 626ms
+  "https://rpc.mainnet.arc.io",        // canonical, but unreliable when measured
 ];
 const LOG_RPCS = [
-  "https://rpc.mainnet.arc.io",
   "https://arc.gateway.tenderly.co",
+  "https://rpc.mainnet.arc.io",
 ];
 let override = null;
 const cursor = { read: 0, log: 0 };
@@ -365,10 +369,14 @@ const CHUNK = 5000;          // the RPC refuses wider ranges
 // that morning, leaving a visitor with an empty ledger and a button to press. Keep going
 // until there is something worth showing, or the whole history has been read.
 const WANT_EVENTS = 25;
-// Six requests in flight is the measured sweet spot against these endpoints: 11s to walk
-// back 34h, against 32s one at a time. Eight is slower, because the nodes start throttling.
-const BATCH = 6;
-const MAX_ROUNDS = 16;
+// Two in flight, measured. Six looked faster until the failures were counted: these nodes
+// drop concurrent connections, and three at once against a two-endpoint pool produced a
+// third of requests failing. Measured over the same 34h walk: batch 2 took 9.3s with one
+// retry, batch 3 took 8.6s with six, batch 4 took 31.6s and gave up on five chunks.
+const BATCH = 2;
+// 40 rounds of 2 covers the whole contract history. It only runs that far on a quiet
+// day; when the agent has run recently the first chunk hits and the page fills at once.
+const MAX_ROUNDS = 40;
 
 const SEL = {
   remaining: "0x55234ec0", currentWindow: "0xba0bafb4", budget: "0x6f9c2f7a",
@@ -393,35 +401,52 @@ function pool(method) {
 
 async function rpc(method, params) {
   const { list, key } = pool(method);
-  let networkFails = 0;
-  for (let attempt = 0; attempt < list.length * 3; attempt++) {
-    const url = list[cursor[key] % list.length];
-    let j;
-    try {
-      const r = await fetch(url, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
-      });
-      j = await r.json();
-    } catch (e) {
-      // fetch rejecting outright means blocked, dead, or no network
-      networkFails++;
-      cursor[key]++;
-      if (networkFails >= list.length) {
-        const err = new Error(`every ${key === "log" ? "log-capable " : ""}endpoint refused the request`);
-        err.blocked = true; throw err;
+  const ROUNDS = 3;
+  let hardFails = 0, attempts = 0;
+
+  // Stay on whichever endpoint is currently working. Spreading parallel calls across the
+  // pool sounded fairer but was twice as slow, because Promise.all waits for the slowest
+  // host. Rotate only when one actually fails.
+  const start = cursor[key];
+
+  // Try every endpoint, then go round again with a longer pause. Rotating away on the
+  // first refusal was the bug: a dropped connection is usually transient, and treating
+  // it as permanent made the page cry "blocked" when nothing was blocking it.
+  for (let round = 0; round < ROUNDS; round++) {
+    for (let n = 0; n < list.length; n++) {
+      const url = list[(start + n) % list.length];
+      attempts++;
+      let j;
+      try {
+        const r = await fetch(url, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
+        });
+        j = await r.json();
+      } catch (e) {
+        hardFails++;
+        continue;
       }
-      continue;
+      if (!j.error) {
+        cursor[key] = (start + n) % list.length;
+        showEndpoint(url);
+        return j.result;
+      }
+      const msg = j.error.message || "";
+      if (/rate limit/i.test(msg)) { await sleep(300 * (round + 1)); continue; }
+      // capability limits belong to one endpoint, so move along quietly
+      if (/not supported|require|exceeded|too large|archive/i.test(msg)) continue;
+      const err = new Error(msg); err.data = j.error.data; throw err;
     }
-    if (!j.error) { showEndpoint(url); return j.result; }
-    const msg = j.error.message || "";
-    if (/rate limit/i.test(msg)) { await sleep(420 * (attempt + 1)); continue; }
-    // capability limits are per-endpoint, so move on rather than give up
-    if (/not supported|require|exceeded|too large|archive/i.test(msg)) { cursor[key]++; continue; }
-    const err = new Error(msg); err.data = j.error.data; throw err;
+    await sleep(250 * (round + 1));
   }
-  const err = new Error(`no endpoint could serve ${method}`);
-  err.exhausted = true; throw err;
+
+  const err = new Error(`${list.length} endpoints failed after ${ROUNDS} rounds`);
+  // Only an extension block looks like this: every single attempt refused before the
+  // request left the browser. Anything that answered, even with an error, rules it out.
+  err.blocked = hardFails === attempts;
+  err.exhausted = true;
+  throw err;
 }
 
 function showEndpoint(url) {
@@ -457,7 +482,7 @@ function fail(msg, blocked) {
     ? "A browser extension is blocking this page"
     : "Could not load live data";
   $("diag-m").innerHTML = blocked
-    ? "All four Arc RPC endpoints were refused before leaving your browser, which ad blockers and " +
+    ? `All ${READ_RPCS.length} Arc RPC endpoints were refused before leaving your browser, which ad blockers and ` +
       "privacy extensions commonly do to crypto endpoints. Pause the blocker for this page and reload. " +
       "Everything below still links to Arc's explorer, where the same figures can be read directly."
     : msg;
